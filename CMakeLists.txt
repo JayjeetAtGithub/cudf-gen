@@ -18,5 +18,5 @@ include(./fetch_dependencies.cmake)
 
 # Configure your project here
 add_executable(dbgen src/dbgen.cpp)
-target_link_libraries(dbgen PRIVATE cudf::cudf)
-target_compile_features(dbgen PRIVATE cxx_std_17)
+target_link_libraries(dbgen PUBLIC cudf::cudf)
+target_compile_features(dbgen PUBLIC cxx_std_17)
