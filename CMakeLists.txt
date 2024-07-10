@@ -17,6 +17,10 @@ project(
 include(./fetch_dependencies.cmake)
 
 # Configure your project here
-add_executable(dbgen src/dbgen.cpp)
+add_executable(dbgen src/dbgen.cu)
+
+set_property(TARGET dbgen 
+             PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 target_link_libraries(dbgen PUBLIC cudf::cudf)
-target_compile_features(dbgen PUBLIC cxx_std_17)
+target_compile_features(dbgen PUBLIC cxx_std_17 cuda_std_17)
+target_compile_options(dbgen PUBLIC $<$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>:--expt-relaxed-constexpr>)
