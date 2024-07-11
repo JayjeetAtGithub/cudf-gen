@@ -225,7 +225,14 @@ int main(int argc, char** argv)
   rmm::mr::pool_memory_resource mr{&cuda_mr, rmm::percent_of_free_device_memory(50)};
   rmm::mr::set_current_device_resource(&mr);
 
-  int32_t scale_factor = 1;
+  if (argc < 2) {
+    std::cerr << "Usage: " << argv[0] << " <scale_factor>" << std::endl;
+    return 1;
+  }
+
+  int32_t scale_factor = std::atoi(argv[1]);
+  std::cout << "Requested scale factor: " << scale_factor << std::endl;
+
   auto supplier = generate_supplier(scale_factor);
   write_parquet(
     supplier->view(), "supplier.parquet", 
