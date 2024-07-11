@@ -116,36 +116,58 @@ struct generate_random_value
         }
 };
 
-// lengths: [10, 20, 30, 40, 50]
-// offsets: [0, 10, 30, 60, 100, 150]
-void gen_rand_string_col(cudf::size_type num_rows)
+std::unique_ptr<cudf::column> gen_rand_string_col(int lower, int upper, cudf::size_type num_rows)
 {  
-  rmm::device_uvector<cudf::size_type> lengths(num_rows, cudf::get_default_stream());
   rmm::device_uvector<cudf::size_type> offsets(num_rows + 1, cudf::get_default_stream());
+
+  // The first element will always be 0 since it the offset of the first string.
+  int initial_offset{0};
+  offsets.set_element(0, initial_offset, cudf::get_default_stream());
   
+  // We generate the lengths of the strings randomly for each row and 
+  // store them from the second element of the offsets vector.
   thrust::transform(
     rmm::exec_policy(cudf::get_default_stream()),
     thrust::make_counting_iterator(0),
     thrust::make_counting_iterator(num_rows),
-    lengths.begin(),
-    generate_random_value<cudf::size_type>(10, 40)
+    offsets.begin() + 1,
+    generate_random_value<cudf::size_type>(lower, upper)
   );
-
-  thrust::exclusive_scan(
+  
+  // We then calculate the offsets by performing an inclusive scan on this vector.
+  thrust::inclusive_scan(
     rmm::exec_policy(cudf::get_default_stream()),
-    lengths.begin(),
-    lengths.end(),
+    offsets.begin(),
+    offsets.end(),
     offsets.begin()
   );
 
-  cudf::size_type total_length = *thrust::device_pointer_cast(offsets.end() - 1);
-  rmm::device_uvector<char> chars(total_length, cudf::get_default_stream());  
-  generate_random_string(chars.data());
-  std::cout << "here" << std::endl;
+  // The last element is the total length of all the strings combined using 
+  // which we allocate the memory for the `chars` vector, that holds the randomly
+  // generated characters for the strings.
+  auto total_length = *thrust::device_pointer_cast(offsets.end() - 1);
+  rmm::device_uvector<char> chars(total_length, cudf::get_default_stream());
+  
+  // We generate the strings in parallel into the `chars` vector using the offsets
+  // vector generated above.
+  thrust::for_each_n(
+    rmm::exec_policy(cudf::get_default_stream()),
+    thrust::make_zip_iterator(offsets.begin(), offsets.begin() + 1),
+    num_rows,
+    generate_random_string(chars.data())
+  );
+
+  return cudf::make_strings_column(
+    num_rows, 
+    std::make_unique<cudf::column>(std::move(offsets), rmm::device_buffer{}, 0),
+    chars.release(),
+    0,
+    rmm::device_buffer{}
+  );
 }
 
 template<typename T>
-std::unique_ptr<cudf::column> gen_rand_col(T lower, T upper, cudf::size_type count) {
+std::unique_ptr<cudf::column> gen_rand_numeric_col(T lower, T upper, cudf::size_type count) {
   cudf::data_type type;
   if (cudf::is_numeric<T>()) {
     type = cudf::data_type{cudf::type_id::INT32};
@@ -206,28 +228,36 @@ std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
   auto s_name_parts = cudf::table_view({supplier_repeat->view(), s_suppkey_str->view()});
   auto s_name = cudf::strings::concatenate(s_name_parts);
 
+  // Generate the `s_address` column
+  auto s_address = gen_rand_string_col(10, 40, num_rows);
+
   // Generate the `s_nationkey` column
-  auto s_nationkey = gen_rand_col<int>(0, 24, num_rows);
+  auto s_nationkey = gen_rand_numeric_col<int>(0, 24, num_rows);
 
   // Generate the `s_phone` column
-  auto s_phone_part_1 = cudf::strings::from_integers(gen_rand_col<int>(10, 34, num_rows)->view());
-  auto s_phone_part_2 = cudf::strings::from_integers(gen_rand_col<int>(100, 999, num_rows)->view());
-  auto s_phone_part_3 = cudf::strings::from_integers(gen_rand_col<int>(100, 999, num_rows)->view());
-  auto s_phone_part_4 = cudf::strings::from_integers(gen_rand_col<int>(1000, 9999, num_rows)->view());
+  auto s_phone_part_1 = cudf::strings::from_integers(gen_rand_numeric_col<int>(10, 34, num_rows)->view());
+  auto s_phone_part_2 = cudf::strings::from_integers(gen_rand_numeric_col<int>(100, 999, num_rows)->view());
+  auto s_phone_part_3 = cudf::strings::from_integers(gen_rand_numeric_col<int>(100, 999, num_rows)->view());
+  auto s_phone_part_4 = cudf::strings::from_integers(gen_rand_numeric_col<int>(1000, 9999, num_rows)->view());
   auto s_phone_parts = cudf::table_view(
     {s_phone_part_1->view(), s_phone_part_2->view(), s_phone_part_3->view(), s_phone_part_4->view()});
   auto s_phone = cudf::strings::concatenate(s_phone_parts, cudf::string_scalar("-"));
   
   // Generate the `s_acctbal` column
-  auto s_acctbal = gen_rand_col<float>(-999.99, 9999.99, num_rows);
+  auto s_acctbal = gen_rand_numeric_col<float>(-999.99, 9999.99, num_rows);
+
+  // Generate the `s_comment` column
+  auto s_comment = gen_rand_string_col(25, 100, num_rows);
 
   // Create the `supplier` table
   std::vector<std::unique_ptr<cudf::column>> columns;
   columns.push_back(std::move(s_suppkey));
   columns.push_back(std::move(s_name));
+  columns.push_back(std::move(s_address));
   columns.push_back(std::move(s_nationkey));
   columns.push_back(std::move(s_phone));
   columns.push_back(std::move(s_acctbal));
+  columns.push_back(std::move(s_comment));
   
   return std::make_unique<cudf::table>(std::move(columns));
 }
@@ -249,7 +279,7 @@ int main(int argc, char** argv)
   auto supplier = generate_supplier(scale_factor);
   write_parquet(
     supplier->view(), "supplier.parquet", 
-    {"s_suppkey", "s_name", "s_nationkey", "s_phone", "s_acctbal"}
+    {"s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone", "s_acctbal", "s_comment"}
   );
 
   auto nation = generate_nation(scale_factor);
