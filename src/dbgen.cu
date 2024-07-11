@@ -67,18 +67,15 @@
 
 
 
-struct string_generator {
+struct generate_random_string {
   char* chars;
-  thrust::minstd_rand engine;
+  thrust::default_random_engine engine;
   thrust::uniform_int_distribution<unsigned char> char_dist;
-  string_generator(char* c, thrust::minstd_rand& engine)
-    : chars(c), engine(engine), char_dist(32, 137)
-  // ~90% ASCII, ~10% UTF-8.
-  // ~80% not-space, ~20% space.
-  // range 32-127 is ASCII; 127-136 will be multi-byte UTF-8
-  {
-  }
-  __device__ void operator()(thrust::tuple<cudf::size_type, cudf::size_type> str_begin_end)
+  
+  __host__ __device__
+  generate_random_string(char* c) : chars(c), char_dist(32, 137) {}
+  
+  __host__ __device__ void operator()(thrust::tuple<cudf::size_type, cudf::size_type> str_begin_end)
   {
     auto begin = thrust::get<0>(str_begin_end);
     auto end   = thrust::get<1>(str_begin_end);
@@ -106,18 +103,46 @@ struct generate_random_value
         float operator()(const unsigned int idx) const
         {
             if (cudf::is_numeric<T>()) {
-              thrust::default_random_engine rng;
+              thrust::default_random_engine engine;
               thrust::uniform_int_distribution<int> dist(lower, upper);
-              rng.discard(idx);
-              return dist(rng);
+              engine.discard(idx);
+              return dist(engine);
             } else {
-              thrust::default_random_engine rng;
+              thrust::default_random_engine engine;
               thrust::uniform_real_distribution<float> dist(lower, upper);
-              rng.discard(idx);
-              return dist(rng);
+              engine.discard(idx);
+              return dist(engine);
             }
         }
 };
+
+// lengths: [10, 20, 30, 40, 50]
+// offsets: [0, 10, 30, 60, 100, 150]
+void gen_rand_string_col(cudf::size_type num_rows)
+{  
+  rmm::device_uvector<cudf::size_type> lengths(num_rows, cudf::get_default_stream());
+  rmm::device_uvector<cudf::size_type> offsets(num_rows + 1, cudf::get_default_stream());
+  
+  thrust::transform(
+    rmm::exec_policy(cudf::get_default_stream()),
+    thrust::make_counting_iterator(0),
+    thrust::make_counting_iterator(num_rows),
+    lengths.begin(),
+    generate_random_value<cudf::size_type>(10, 40)
+  );
+
+  thrust::exclusive_scan(
+    rmm::exec_policy(cudf::get_default_stream()),
+    lengths.begin(),
+    lengths.end(),
+    offsets.begin()
+  );
+
+  cudf::size_type total_length = *thrust::device_pointer_cast(offsets.end() - 1);
+  rmm::device_uvector<char> chars(total_length, cudf::get_default_stream());  
+  generate_random_string(chars.data());
+  std::cout << "here" << std::endl;
+}
 
 template<typename T>
 std::unique_ptr<cudf::column> gen_rand_col(T lower, T upper, cudf::size_type count) {
@@ -138,7 +163,6 @@ std::unique_ptr<cudf::column> gen_rand_col(T lower, T upper, cudf::size_type cou
   return col;
 }
 
-
 std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
   cudf::size_type num_rows = 10000 * scale_factor;
 
@@ -152,13 +176,22 @@ std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
   auto empty_str_col = cudf::make_strings_column(indices, cudf::string_view(nullptr, 0), cudf::get_default_stream());
   auto supplier_scalar = cudf::string_scalar("Supplier#");
   auto supplier_repeat = cudf::fill(empty_str_col->view(), 0, num_rows, supplier_scalar);
-  auto s_suppkey_int = cudf::strings::from_integers(s_suppkey->view());
-  auto tbl_view = cudf::table_view({supplier_repeat->view(), s_suppkey_int->view()});
-  auto s_name = cudf::strings::concatenate(tbl_view);
+  auto s_suppkey_str = cudf::strings::from_integers(s_suppkey->view());
+  auto s_name_parts = cudf::table_view({supplier_repeat->view(), s_suppkey_str->view()});
+  auto s_name = cudf::strings::concatenate(s_name_parts);
 
   // Generate the `s_nationkey` column
   auto s_nationkey = gen_rand_col<int>(0, 24, num_rows);
 
+  // Generate the `s_phone` column
+  auto s_phone_part_1 = cudf::strings::from_integers(gen_rand_col<int>(10, 34, num_rows)->view());
+  auto s_phone_part_2 = cudf::strings::from_integers(gen_rand_col<int>(100, 999, num_rows)->view());
+  auto s_phone_part_3 = cudf::strings::from_integers(gen_rand_col<int>(100, 999, num_rows)->view());
+  auto s_phone_part_4 = cudf::strings::from_integers(gen_rand_col<int>(1000, 9999, num_rows)->view());
+  auto s_phone_parts = cudf::table_view(
+    {s_phone_part_1->view(), s_phone_part_2->view(), s_phone_part_3->view(), s_phone_part_4->view()});
+  auto s_phone = cudf::strings::concatenate(s_phone_parts, cudf::string_scalar("-"));
+  
   // Generate the `s_acctbal` column
   auto s_acctbal = gen_rand_col<float>(-999.99, 9999.99, num_rows);
 
@@ -167,6 +200,7 @@ std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
   columns.push_back(std::move(s_suppkey));
   columns.push_back(std::move(s_name));
   columns.push_back(std::move(s_nationkey));
+  columns.push_back(std::move(s_phone));
   columns.push_back(std::move(s_acctbal));
   
   return std::make_unique<cudf::table>(std::move(columns));
@@ -182,7 +216,9 @@ int main(int argc, char** argv)
   auto supplier = generate_supplier(scale_factor);
 
   write_parquet(
-    supplier->view(), "supplier.parquet", {"s_suppkey", "s_name", "s_nationkey", "s_acctbal"});
+    supplier->view(), "supplier.parquet", 
+    {"s_suppkey", "s_name", "s_nationkey", "s_phone", "s_acctbal"}
+  );
 
   return 0;
 }
