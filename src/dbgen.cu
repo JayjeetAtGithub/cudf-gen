@@ -163,6 +163,19 @@ std::unique_ptr<cudf::column> gen_rand_col(T lower, T upper, cudf::size_type cou
   return col;
 }
 
+std::unique_ptr<cudf::table> generate_region(int32_t scale_factor) {
+  cudf::size_type num_rows = 5;
+
+  // Generate the `r_regionkey` column
+  auto init_value = cudf::numeric_scalar<int32_t>(0);
+  auto step_value = cudf::numeric_scalar<int32_t>(1);
+  auto r_regionkey = cudf::sequence(num_rows, init_value, step_value);
+
+  std::vector<std::unique_ptr<cudf::column>> columns;
+  columns.push_back(std::move(r_regionkey));
+  return std::make_unique<cudf::table>(std::move(columns));
+}
+
 std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
   cudf::size_type num_rows = 10000 * scale_factor;
 
@@ -214,11 +227,13 @@ int main(int argc, char** argv)
 
   int32_t scale_factor = 1;
   auto supplier = generate_supplier(scale_factor);
-
   write_parquet(
     supplier->view(), "supplier.parquet", 
     {"s_suppkey", "s_name", "s_nationkey", "s_phone", "s_acctbal"}
   );
+
+  auto region = generate_region(scale_factor);
+  write_parquet(region->view(), "region.parquet", {"r_regionkey"});
 
   return 0;
 }
