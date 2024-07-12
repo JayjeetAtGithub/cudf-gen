@@ -162,17 +162,33 @@ std::unique_ptr<cudf::column> gen_rand_numeric_col(T lower, T upper,
   return col;
 }
 
+std::unique_ptr<cudf::column> gen_seq(int64_t len) {
+  auto init = cudf::numeric_scalar<int64_t>(0);
+  auto step = cudf::numeric_scalar<int64_t>(1);
+  return cudf::sequence(len, init, step);
+}
+ 
+std::unique_ptr<cudf::table> generate_part(int32_t scale_factor) {
+  cudf::size_type num_rows = 200000 * scale_factor;
+
+  // Generate the `p_partkey` column
+  auto p_partkey = gen_seq(num_rows);
+  
+
+  // Generate the `p_size` column
+  auto p_size = gen_rand_numeric_col<int>(1, 50, num_rows);
+}
+
 std::unique_ptr<cudf::table> generate_nation(int32_t scale_factor) {
   cudf::size_type num_rows = 25;
 
   // Generate the `n_nationkey` column
-  auto init_value = cudf::numeric_scalar<int32_t>(0);
-  auto step_value = cudf::numeric_scalar<int32_t>(1);
-  auto n_nationkey = cudf::sequence(num_rows, init_value, step_value);
+  auto n_nationkey = gen_seq(num_rows);
 
   // Generate the `n_comment` column
   auto n_comment = gen_rand_string_col(31, 114, num_rows);
 
+  // Create the `nation` table
   std::vector<std::unique_ptr<cudf::column>> columns;
   columns.push_back(std::move(n_nationkey));
   columns.push_back(std::move(n_comment));
@@ -183,16 +199,78 @@ std::unique_ptr<cudf::table> generate_region(int32_t scale_factor) {
   cudf::size_type num_rows = 5;
 
   // Generate the `r_regionkey` column
-  auto init_value = cudf::numeric_scalar<int32_t>(0);
-  auto step_value = cudf::numeric_scalar<int32_t>(1);
+  auto init_value = cudf::numeric_scalar<int64_t>(0);
+  auto step_value = cudf::numeric_scalar<int64_t>(1);
   auto r_regionkey = cudf::sequence(num_rows, init_value, step_value);
 
   // Generate the `r_comment` column
   auto r_comment = gen_rand_string_col(31, 115, num_rows);
 
+  // Create the `region` table
   std::vector<std::unique_ptr<cudf::column>> columns;
   columns.push_back(std::move(r_regionkey));
   columns.push_back(std::move(r_comment));
+  return std::make_unique<cudf::table>(std::move(columns));
+}
+
+std::unique_ptr<cudf::table> generate_customer(int32_t scale_factor) {
+  cudf::size_type num_rows = 150000 * scale_factor;
+
+  // Generate the `c_custkey` column
+  auto init_value = cudf::numeric_scalar<int64_t>(0);
+  auto step_value = cudf::numeric_scalar<int64_t>(1);
+  auto c_custkey = cudf::sequence(num_rows, init_value, step_value);
+
+  // Generate the `c_name` column
+  auto indices = rmm::device_uvector<cudf::string_view>(
+      num_rows, cudf::get_default_stream());
+  auto empty_str_col = cudf::make_strings_column(
+      indices, cudf::string_view(nullptr, 0), cudf::get_default_stream());
+  auto customer_scalar = cudf::string_scalar("Customer#");
+  auto customer_repeat =
+      cudf::fill(empty_str_col->view(), 0, num_rows, customer_scalar);
+  auto c_custkey_str = cudf::strings::from_integers(c_custkey->view());
+  auto c_name_parts =
+      cudf::table_view({customer_repeat->view(), c_custkey_str->view()});
+  auto c_name = cudf::strings::concatenate(c_name_parts);
+
+  // Generate the `c_address` column
+  auto c_address = gen_rand_string_col(10, 40, num_rows);
+
+  // Generate the `c_nationkey` column
+  auto c_nationkey = gen_rand_numeric_col<int>(0, 24, num_rows);
+
+  // Generate the `c_phone` column
+  auto c_phone_a = cudf::strings::from_integers(
+      gen_rand_numeric_col<int>(10, 34, num_rows)->view());
+  auto c_phone_b = cudf::strings::from_integers(
+      gen_rand_numeric_col<int>(100, 999, num_rows)->view());
+  auto c_phone_c = cudf::strings::from_integers(
+      gen_rand_numeric_col<int>(100, 999, num_rows)->view());
+  auto c_phone_d = cudf::strings::from_integers(
+      gen_rand_numeric_col<int>(1000, 9999, num_rows)->view());
+  auto c_phone_parts =
+      cudf::table_view({c_phone_a->view(), c_phone_b->view(),
+                        c_phone_c->view(), c_phone_d->view()});
+  auto c_phone =
+      cudf::strings::concatenate(c_phone_parts, cudf::string_scalar("-"));
+
+  // Generate the `c_acctbal` column
+  auto c_acctbal = gen_rand_numeric_col<float>(-999.99, 9999.99, num_rows);
+
+  // Generate the `c_comment` column
+  auto c_comment = gen_rand_string_col(29, 116, num_rows);
+
+  // Create the `customer` table
+  std::vector<std::unique_ptr<cudf::column>> columns;
+  columns.push_back(std::move(c_custkey));
+  columns.push_back(std::move(c_name));
+  columns.push_back(std::move(c_address));
+  columns.push_back(std::move(c_nationkey));
+  columns.push_back(std::move(c_phone));
+  columns.push_back(std::move(c_acctbal));
+  columns.push_back(std::move(c_comment));
+
   return std::make_unique<cudf::table>(std::move(columns));
 }
 
@@ -200,8 +278,8 @@ std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
   cudf::size_type num_rows = 10000 * scale_factor;
 
   // Generate the `s_suppkey` column
-  auto init_value = cudf::numeric_scalar<int32_t>(0);
-  auto step_value = cudf::numeric_scalar<int32_t>(1);
+  auto init_value = cudf::numeric_scalar<int64_t>(0);
+  auto step_value = cudf::numeric_scalar<int64_t>(1);
   auto s_suppkey = cudf::sequence(num_rows, init_value, step_value);
 
   // Generate the `s_name` column
@@ -260,7 +338,7 @@ std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
 int main(int argc, char **argv) {
   rmm::mr::cuda_memory_resource cuda_mr{};
   rmm::mr::pool_memory_resource mr{&cuda_mr,
-                                   rmm::percent_of_free_device_memory(80)};
+                                   rmm::percent_of_free_device_memory(50)};
   rmm::mr::set_current_device_resource(&mr);
 
   if (argc < 2) {
@@ -275,6 +353,9 @@ int main(int argc, char **argv) {
   write_parquet(supplier->view(), "supplier.parquet",
                 {"s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone",
                  "s_acctbal", "s_comment"});
+  
+  auto customer = generate_customer(scale_factor);
+  write_parquet(customer->view(), "customer.parquet", {"c_custkey", "c_name"});
 
   auto nation = generate_nation(scale_factor);
   write_parquet(nation->view(), "nation.parquet", {"n_nationkey", "n_comment"});
