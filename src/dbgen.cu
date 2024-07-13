@@ -101,7 +101,7 @@ template <typename T> struct generate_random_value {
   }
 };
 
-std::unique_ptr<cudf::column> gen_rand_string_col(int lower, int upper,
+std::unique_ptr<cudf::column> gen_rand_str_col(int lower, int upper,
                                                   cudf::size_type num_rows) {
   rmm::device_uvector<cudf::size_type> offsets(num_rows + 1,
                                                cudf::get_default_stream());
@@ -190,6 +190,54 @@ std::unique_ptr<cudf::column> gen_repeat_str_col(std::string value, int64_t num_
   return scalar_repeat;
 }
 
+
+std::vector<std::string> get_types_strs() {
+  std::vector<std::string> syllable_a = {"STANDARD", "SMALL", "MEDIUM", "LARGE", "ECONOMY", "PROMO"};
+  std::vector<std::string> syllable_b = {"ANODIZED", "BURNISHED", "PLATED", "POLISHED", "BRUSHED"};
+  std::vector<std::string> syllable_c = {"TIN", "NICKEL", "BRASS", "STEEL", "COPPER"};
+  std::vector<std::string> syllable_combinations;
+  for (auto const& s_a : syllable_a) {
+    for (auto const& s_b : syllable_b) {
+      for (auto const& s_c : syllable_c) {
+        syllable_combinations.push_back(s_a + " " + s_b + " " + s_c);
+      }
+    }
+  }
+  return syllable_combinations;
+}
+
+std::vector<std::string> get_containers_strs() {
+  std::vector<std::string> syllable_a = {"SM", "LG", "MED", "JUMBO", "WRAP"};
+  std::vector<std::string> syllable_b = {"CASE", "BOX", "BAG", "JAR", "PKG", "PACK", "CAN", "DRUM"};
+  std::vector<std::string> syllable_combinations;
+  for (auto const& s_a : syllable_a) {
+    for (auto const& s_b : syllable_b) {
+      syllable_combinations.push_back(s_a + " " + s_b);
+    }
+  }
+  return syllable_combinations;
+}
+
+std::unique_ptr<cudf::column> gen_rand_str_col_from_set(std::vector<std::string> string_set, int64_t num_rows) {
+  auto stream = cudf::get_default_stream();
+  rmm::device_uvector<int32_t> indices(num_rows, stream);
+  rmm::device_uvector<cudf::string_view> strings_vector(num_rows, stream);
+
+  thrust::counting_iterator<int64_t> idx_seq_begin(0);
+  thrust::transform(rmm::exec_policy(stream),
+                    idx_seq_begin,
+                    idx_seq_begin + num_rows,
+                    indices.begin(),
+                    generate_random_value<int32_t>(0, string_set.size()));
+
+  for (int32_t idx = 0; idx < indices.size(); idx++) {
+    auto idx_into_string_set = indices.element(idx, stream);
+    strings_vector.set_element(idx, cudf::string_view(string_set[idx_into_string_set].c_str(), string_set[idx_into_string_set].size()), stream);
+  }
+
+  return cudf::make_strings_column(strings_vector, cudf::string_view(nullptr, 0), stream);
+}
+
 std::unique_ptr<cudf::table> generate_part(int32_t scale_factor) {
   cudf::size_type num_rows = 200000 * scale_factor;
 
@@ -207,19 +255,28 @@ std::unique_ptr<cudf::table> generate_part(int32_t scale_factor) {
   auto random_values_n = gen_rand_numeric_col<int>(1, 5, num_rows);
   auto random_values_n_str = cudf::strings::from_integers(random_values_n->view());
   auto p_brand = cudf::strings::concatenate(cudf::table_view({brand_repeat->view(), random_values_m_str->view(), random_values_n_str->view()}));
+
+  // Generate the `p_type` column
+  auto p_type = gen_rand_str_col_from_set(get_types_strs(), num_rows);
  
   // Generate the `p_size` column
   auto p_size = gen_rand_numeric_col<int>(1, 50, num_rows);
 
+  // Generate the `p_container` column
+  auto p_container = gen_rand_str_col_from_set(get_containers_strs(), num_rows);
 
   // Generate the `p_comment` column
   // TODO: Make this column compliant as per clause 4.2.2.10
-  auto p_comment = gen_rand_string_col(5, 22, num_rows);
+  auto p_comment = gen_rand_str_col(5, 22, num_rows);
 
   // Create the `part` table
   std::vector<std::unique_ptr<cudf::column>> columns;
   columns.push_back(std::move(p_partkey));
+  columns.push_back(std::move(p_mfgr));
+  columns.push_back(std::move(p_brand));
+  columns.push_back(std::move(p_type));
   columns.push_back(std::move(p_size));
+  columns.push_back(std::move(p_container));
   columns.push_back(std::move(p_comment));
   return std::make_unique<cudf::table>(std::move(columns));
 }
@@ -231,7 +288,7 @@ std::unique_ptr<cudf::table> generate_nation(int32_t scale_factor) {
   auto n_nationkey = gen_primary_key_col(num_rows);
 
   // Generate the `n_comment` column
-  auto n_comment = gen_rand_string_col(31, 114, num_rows);
+  auto n_comment = gen_rand_str_col(31, 114, num_rows);
 
   // Create the `nation` table
   std::vector<std::unique_ptr<cudf::column>> columns;
@@ -249,7 +306,7 @@ std::unique_ptr<cudf::table> generate_region(int32_t scale_factor) {
   auto r_regionkey = cudf::sequence(num_rows, init_value, step_value);
 
   // Generate the `r_comment` column
-  auto r_comment = gen_rand_string_col(31, 115, num_rows);
+  auto r_comment = gen_rand_str_col(31, 115, num_rows);
 
   // Create the `region` table
   std::vector<std::unique_ptr<cudf::column>> columns;
@@ -278,7 +335,7 @@ std::unique_ptr<cudf::table> generate_customer(int32_t scale_factor) {
   auto c_name = cudf::strings::concatenate(c_name_parts);
 
   // Generate the `c_address` column
-  auto c_address = gen_rand_string_col(10, 40, num_rows);
+  auto c_address = gen_rand_str_col(10, 40, num_rows);
 
   // Generate the `c_nationkey` column
   auto c_nationkey = gen_rand_numeric_col<int>(0, 24, num_rows);
@@ -302,7 +359,7 @@ std::unique_ptr<cudf::table> generate_customer(int32_t scale_factor) {
   auto c_acctbal = gen_rand_numeric_col<float>(-999.99, 9999.99, num_rows);
 
   // Generate the `c_comment` column
-  auto c_comment = gen_rand_string_col(29, 116, num_rows);
+  auto c_comment = gen_rand_str_col(29, 116, num_rows);
 
   // Create the `customer` table
   std::vector<std::unique_ptr<cudf::column>> columns;
@@ -337,7 +394,7 @@ std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
   auto s_name = cudf::strings::concatenate(s_name_parts);
 
   // Generate the `s_address` column
-  auto s_address = gen_rand_string_col(10, 40, num_rows);
+  auto s_address = gen_rand_str_col(10, 40, num_rows);
 
   // Generate the `s_nationkey` column
   auto s_nationkey = gen_rand_numeric_col<int>(0, 24, num_rows);
@@ -361,7 +418,7 @@ std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
   auto s_acctbal = gen_rand_numeric_col<float>(-999.99, 9999.99, num_rows);
 
   // Generate the `s_comment` column
-  auto s_comment = gen_rand_string_col(25, 100, num_rows);
+  auto s_comment = gen_rand_str_col(25, 100, num_rows);
 
   // Create the `supplier` table
   std::vector<std::unique_ptr<cudf::column>> columns;
@@ -390,19 +447,24 @@ int main(int argc, char **argv) {
   int32_t scale_factor = std::atoi(argv[1]);
   std::cout << "Requested scale factor: " << scale_factor << std::endl;
 
-  auto supplier = generate_supplier(scale_factor);
-  write_parquet(supplier->view(), "supplier.parquet",
-                {"s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone",
-                 "s_acctbal", "s_comment"});
+  auto part = generate_part(scale_factor);
+  write_parquet(part->view(), "part.parquet", {
+    "p_partkey", "p_mfgr", "p_brand", "p_type", "p_size", "p_container", "p_comment"
+  });
+
+  // auto supplier = generate_supplier(scale_factor);
+  // write_parquet(supplier->view(), "supplier.parquet",
+  //               {"s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone",
+  //                "s_acctbal", "s_comment"});
   
   // auto customer = generate_customer(scale_factor);
   // write_parquet(customer->view(), "customer.parquet", {"c_custkey", "c_name"});
 
-  auto nation = generate_nation(scale_factor);
-  write_parquet(nation->view(), "nation.parquet", {"n_nationkey", "n_comment"});
+  // auto nation = generate_nation(scale_factor);
+  // write_parquet(nation->view(), "nation.parquet", {"n_nationkey", "n_comment"});
 
-  auto region = generate_region(scale_factor);
-  write_parquet(region->view(), "region.parquet", {"r_regionkey", "r_comment"});
+  // auto region = generate_region(scale_factor);
+  // write_parquet(region->view(), "region.parquet", {"r_regionkey", "r_comment"});
 
   return 0;
 }
