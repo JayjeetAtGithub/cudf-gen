@@ -162,28 +162,73 @@ std::unique_ptr<cudf::column> gen_rand_numeric_col(T lower, T upper,
   return col;
 }
 
-std::unique_ptr<cudf::column> gen_seq(int64_t len) {
+/**
+ * @brief Generate a primary key column
+ * 
+ * @param num_rows The number of rows in the column
+ */
+std::unique_ptr<cudf::column> gen_primary_key_col(int64_t num_rows) {
   auto init = cudf::numeric_scalar<int64_t>(0);
   auto step = cudf::numeric_scalar<int64_t>(1);
-  return cudf::sequence(len, init, step);
+  return cudf::sequence(num_rows, init, step);
 }
- 
+
+/**
+ * @brief Generate a column where all the rows have the same string value
+ * 
+ * @param value The string value
+ * @param num_rows The length of the column
+ */
+std::unique_ptr<cudf::column> gen_repeat_str_col(std::string value, int64_t num_rows) {
+  auto indices = rmm::device_uvector<cudf::string_view>(
+      num_rows, cudf::get_default_stream());
+  auto empty_str_col = cudf::make_strings_column(
+      indices, cudf::string_view(nullptr, 0), cudf::get_default_stream());
+  auto scalar = cudf::string_scalar(value);
+  auto scalar_repeat =
+      cudf::fill(empty_str_col->view(), 0, num_rows, scalar);
+  return scalar_repeat;
+}
+
 std::unique_ptr<cudf::table> generate_part(int32_t scale_factor) {
   cudf::size_type num_rows = 200000 * scale_factor;
 
   // Generate the `p_partkey` column
-  auto p_partkey = gen_seq(num_rows);
-  
+  auto p_partkey = gen_primary_key_col(num_rows);
 
+  // Generate the `p_mfgr` column
+  auto mfgr_repeat = gen_repeat_str_col("Manufacturer#", num_rows);
+  auto random_values_m = gen_rand_numeric_col<int>(1, 5, num_rows);
+  auto random_values_m_str = cudf::strings::from_integers(random_values_m->view());
+  auto p_mfgr = cudf::strings::concatenate(cudf::table_view({mfgr_repeat->view(), random_values_m_str->view()}));
+
+  // Generate the `p_brand` column
+  auto brand_repeat = gen_repeat_str_col("Brand#", num_rows);
+  auto random_values_n = gen_rand_numeric_col<int>(1, 5, num_rows);
+  auto random_values_n_str = cudf::strings::from_integers(random_values_n->view());
+  auto p_brand = cudf::strings::concatenate(cudf::table_view({brand_repeat->view(), random_values_m_str->view(), random_values_n_str->view()}));
+ 
   // Generate the `p_size` column
   auto p_size = gen_rand_numeric_col<int>(1, 50, num_rows);
+
+
+  // Generate the `p_comment` column
+  // TODO: Make this column compliant as per clause 4.2.2.10
+  auto p_comment = gen_rand_string_col(5, 22, num_rows);
+
+  // Create the `part` table
+  std::vector<std::unique_ptr<cudf::column>> columns;
+  columns.push_back(std::move(p_partkey));
+  columns.push_back(std::move(p_size));
+  columns.push_back(std::move(p_comment));
+  return std::make_unique<cudf::table>(std::move(columns));
 }
 
 std::unique_ptr<cudf::table> generate_nation(int32_t scale_factor) {
   cudf::size_type num_rows = 25;
 
   // Generate the `n_nationkey` column
-  auto n_nationkey = gen_seq(num_rows);
+  auto n_nationkey = gen_primary_key_col(num_rows);
 
   // Generate the `n_comment` column
   auto n_comment = gen_rand_string_col(31, 114, num_rows);
@@ -217,9 +262,7 @@ std::unique_ptr<cudf::table> generate_customer(int32_t scale_factor) {
   cudf::size_type num_rows = 150000 * scale_factor;
 
   // Generate the `c_custkey` column
-  auto init_value = cudf::numeric_scalar<int64_t>(0);
-  auto step_value = cudf::numeric_scalar<int64_t>(1);
-  auto c_custkey = cudf::sequence(num_rows, init_value, step_value);
+  auto c_custkey = gen_primary_key_col(num_rows);
 
   // Generate the `c_name` column
   auto indices = rmm::device_uvector<cudf::string_view>(
@@ -278,9 +321,7 @@ std::unique_ptr<cudf::table> generate_supplier(int32_t scale_factor) {
   cudf::size_type num_rows = 10000 * scale_factor;
 
   // Generate the `s_suppkey` column
-  auto init_value = cudf::numeric_scalar<int64_t>(0);
-  auto step_value = cudf::numeric_scalar<int64_t>(1);
-  auto s_suppkey = cudf::sequence(num_rows, init_value, step_value);
+  auto s_suppkey = gen_primary_key_col(num_rows);
 
   // Generate the `s_name` column
   auto indices = rmm::device_uvector<cudf::string_view>(
@@ -354,8 +395,8 @@ int main(int argc, char **argv) {
                 {"s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone",
                  "s_acctbal", "s_comment"});
   
-  auto customer = generate_customer(scale_factor);
-  write_parquet(customer->view(), "customer.parquet", {"c_custkey", "c_name"});
+  // auto customer = generate_customer(scale_factor);
+  // write_parquet(customer->view(), "customer.parquet", {"c_custkey", "c_name"});
 
   auto nation = generate_nation(scale_factor);
   write_parquet(nation->view(), "nation.parquet", {"n_nationkey", "n_comment"});
